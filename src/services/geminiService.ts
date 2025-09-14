@@ -5,11 +5,6 @@
 
 import { GoogleGenAI, GenerateContentResponse, Modality, Type } from "@google/genai";
 
-// FIX: Use process.env.API_KEY as per guidelines and update comments.
-// Initialize the Google AI client once and reuse it.
-// It's configured to use the API_KEY environment variable.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
 // Helper function to convert a File object to a Gemini API Part
 const fileToPart = async (file: File): Promise<{ inlineData: { mimeType: string; data: string; } }> => {
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -69,6 +64,7 @@ const callImageGenerationAPI = async (
     prompt: string,
     context: string
 ): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     const originalImagePart = await fileToPart(originalImage);
     const textPart = { text: prompt };
 
@@ -135,6 +131,7 @@ export const generateImageFromPrompt = async (
     prompt: string
 ): Promise<string[]> => {
     console.log(`Starting image generation for prompt: ${prompt}`);
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
     const response = await ai.models.generateImages({
         model: 'imagen-4.0-generate-001',
@@ -154,6 +151,7 @@ export const generateVideoFromPrompt = async (
     prompt: string
 ): Promise<any> => {
     console.log(`Starting video generation for prompt: ${prompt}`);
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     
     const operation = await ai.models.generateVideos({
       model: 'veo-2.0-generate-001',
@@ -170,12 +168,14 @@ export const generateVideoFromPrompt = async (
 export const checkVideoOperationStatus = async (
     operation: any
 ): Promise<any> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     return await ai.operations.getVideosOperation({ operation: operation });
 };
 
 export const enhancePrompt = async (
     idea: string
 ): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     const systemInstruction = `You are an expert AI prompt engineer for a text-to-image model. Your task is to take a user's simple idea and rewrite it into a rich, detailed, and visually descriptive prompt. 
 Focus on adding details about the subject, environment, lighting, and artistic style. 
 The output must be a single, concise paragraph. Respond with ONLY the new prompt and nothing else.`;
@@ -194,6 +194,7 @@ The output must be a single, concise paragraph. Respond with ONLY the new prompt
 export const analyzeVideoFrame = async (
     base64ImageData: string
 ): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     const imagePart = {
         inlineData: {
             mimeType: 'image/jpeg',
@@ -213,6 +214,7 @@ export const analyzeVideoFrame = async (
 };
 
 export const getAICropSuggestions = async (image: File) => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     const imagePart = await fileToPart(image);
     const textPart = { text: `Analyze this image and suggest three compelling crop compositions. For each suggestion, provide a short, descriptive name (e.g., 'Dramatic Close-up') and the crop area as percentages (x, y, width, height) relative to the image dimensions. The 'y' value should be from the top of the image.` };
     
