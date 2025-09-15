@@ -6,17 +6,16 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import ReactCrop, { type Crop, type PixelCrop } from 'react-image-crop';
-import { generateInpaintedImage, generateFilteredImage, generateImageFromPrompt, removeBackgroundImage, upscaleImage, balanceImageColors, enhancePrompt, analyzeVideoFrame, getAICropSuggestions, generateImageFromImageAndPrompt, generateAudioScape } from './services/geminiService';
+import { generateEditedImage, generateFilteredImage, generateImageFromPrompt, generateVideoFromPrompt, checkVideoOperationStatus, removeBackgroundImage, upscaleImage, balanceImageColors, enhancePrompt, analyzeVideoFrame, getAICropSuggestions } from './services/geminiService';
 import Header from './components/Header';
 import Spinner from './components/Spinner';
 import FilterPanel from './components/FilterPanel';
 import AdjustmentPanel from './components/AdjustmentPanel';
+// FIX: Add missing import for CropPanel
 import CropPanel from './components/CropPanel';
-import RetouchPanel from './components/RetouchPanel';
-import { UndoIcon, RedoIcon, EyeIcon, SparklesIcon, MagicWandIcon, GenerateImageIcon, AudioIcon, PlayIcon, PauseIcon, VolumeHighIcon, VolumeMuteIcon, FullscreenIcon, ExitFullscreenIcon, AnalyzeFrameIcon, MusicIcon } from './components/icons';
+import { UndoIcon, RedoIcon, EyeIcon, SparklesIcon, MagicWandIcon, GenerateImageIcon, GenerateVideoIcon, PlayIcon, PauseIcon, VolumeHighIcon, VolumeMuteIcon, FullscreenIcon, ExitFullscreenIcon, AnalyzeFrameIcon, MusicIcon } from './components/icons';
 import StartScreen from './components/StartScreen';
 import ApiErrorToast from './components/ApiErrorToast';
-import AudioScapeScreen from './components/AudioScapeScreen';
 
 // --- IndexedDB Service ---
 const DB_NAME = 'PeterPixxDB';
@@ -97,8 +96,8 @@ const fileToDataURL = (file: File): Promise<string> => {
 
 // Types
 type Tab = 'retouch' | 'crop' | 'adjust' | 'filters';
-type View = 'start' | 'editor' | 'image-gen' | 'audio-scape';
-export type MissionType = 'image-gen' | 'audio-scape';
+type View = 'start' | 'editor' | 'image-gen' | 'video-gen';
+export type MissionType = 'image-gen' | 'video-gen';
 export type CropSuggestion = { name: string; crop: { x: number; y: number; width: number; height: number; }};
 
 
@@ -107,11 +106,12 @@ export interface Mission {
   type: MissionType;
   prompt: string;
   status: 'pending' | 'in-progress' | 'completed' | 'failed';
-  imageDataUrl?: string;
+  audioDataUrl?: string;
   progressMessage?: string;
   result?: boolean; // True if result is stored in DB
   error?: string;
   createdAt: number;
+  operation?: any;
 }
 
 // Mission Management (localStorage)
@@ -343,7 +343,6 @@ const CustomVideoPlayer: React.FC<{ src: string, audioSrc?: string }> = ({ src, 
 const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mission, onClose }) => {
     const [resultUrl, setResultUrl] = useState<string | null>(null);
     const [resultUrls, setResultUrls] = useState<string[]>([]);
-    const [resultText, setResultText] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const sliderRef = useRef<HTMLDivElement>(null);
     
@@ -351,18 +350,14 @@ const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mis
         let active = true;
         const fetchAndSetResult = async () => {
             setIsLoading(true);
-            setResultText(null);
-            setResultUrls([]);
-            setResultUrl(null);
-
             const storedResult = await getResult(mission.id);
             if (!active || !storedResult) {
                 setIsLoading(false);
                 return;
             }
 
-            if (mission.type === 'audio-scape' && storedResult instanceof Blob) {
-                 setResultText(await storedResult.text());
+            if (mission.type === 'video-gen' && storedResult instanceof Blob) {
+                setResultUrl(URL.createObjectURL(storedResult));
             } else if (mission.type === 'image-gen' && Array.isArray(storedResult)) {
                 setResultUrls(storedResult.map(imgData => `data:image/png;base64,${imgData}`));
             }
@@ -383,10 +378,10 @@ const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mis
         let url: string;
         let filename: string;
 
-        if (storedResult instanceof Blob) { // Audio Scape text
+        if (storedResult instanceof Blob) {
             url = URL.createObjectURL(storedResult);
-            filename = `peter-pixx-audioscape-${mission.id}.txt`;
-        } else if (Array.isArray(storedResult)) { // Image Gen
+            filename = `peter-pixx-video-${mission.id}.mp4`;
+        } else if (Array.isArray(storedResult)) {
             // For now, download the first image. A zip download would be a future improvement.
             url = `data:image/png;base64,${storedResult[0]}`;
             filename = `peter-pixx-image-${mission.id}-0.png`;
@@ -417,8 +412,7 @@ const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mis
             <div className="preview-content" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-start gap-4">
                   <h3 className="text-xl font-bold text-gray-100 flex items-center gap-2">
-                    {mission.type === 'image-gen' && <GenerateImageIcon className="w-6 h-6 text-purple-400" />}
-                    {mission.type === 'audio-scape' && <AudioIcon className="w-6 h-6 text-purple-400" />}
+                    {mission.type === 'image-gen' ? <GenerateImageIcon className="w-6 h-6 text-purple-400" /> : <GenerateVideoIcon className="w-6 h-6 text-purple-400" />}
                     Mission Result
                   </h3>
                   <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors text-2xl font-bold">&times;</button>
@@ -427,11 +421,7 @@ const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mis
                 <div className="flex-grow flex items-center justify-center preview-media-container">
                     {isLoading ? <Spinner /> : (
                         <>
-                            {mission.type === 'audio-scape' && resultText && (
-                                <div className="p-6 bg-black rounded-md h-full w-full overflow-y-auto">
-                                    <pre className="text-purple-200 whitespace-pre-wrap font-sans text-lg leading-relaxed">{resultText}</pre>
-                                </div>
-                            )}
+                            {mission.type === 'video-gen' && resultUrl && <CustomVideoPlayer src={resultUrl} audioSrc={mission.audioDataUrl} />}
                             {mission.type === 'image-gen' && resultUrls.length > 0 && (
                                 <div className="relative w-full h-full flex items-center justify-center">
                                     <div ref={sliderRef} className="flex overflow-x-auto snap-x snap-mandatory scrollbar-hide w-full h-full">
@@ -459,12 +449,11 @@ const PreviewModal: React.FC<{ mission: Mission, onClose: () => void }> = ({ mis
 };
 
 
-const ImageGenerationScreen: React.FC<{ onStartMission: (prompt: string, imageFile?: File) => void, initialPrompt?: string }> = ({ onStartMission, initialPrompt }) => {
+const ImageGenerationScreen: React.FC<{ onStartMission: (prompt: string) => void, initialPrompt?: string }> = ({ onStartMission, initialPrompt }) => {
     const [prompt, setPrompt] = useState(initialPrompt || '');
     const [isLoading, setIsLoading] = useState(false);
     const [isEnhancing, setIsEnhancing] = useState(false);
     const [activeStyle, setActiveStyle] = useState('Photorealistic');
-    const [imageFile, setImageFile] = useState<File | null>(null);
     
     const randomPrompts = [
       "A majestic whale shark swimming through a cosmic nebula, digital art",
@@ -487,11 +476,10 @@ const ImageGenerationScreen: React.FC<{ onStartMission: (prompt: string, imageFi
         if (!prompt.trim()) return;
         setIsLoading(true);
         const fullPrompt = `${prompt}, ${styles[activeStyle]}`;
-        onStartMission(fullPrompt, imageFile ?? undefined);
+        onStartMission(fullPrompt);
         setTimeout(() => {
             setIsLoading(false);
             setPrompt('');
-            setImageFile(null);
         }, 1000);
     };
 
@@ -551,35 +539,87 @@ const ImageGenerationScreen: React.FC<{ onStartMission: (prompt: string, imageFi
     );
 };
 
+const VideoGenerationScreen: React.FC<{ onStartMission: (prompt: string, audioDataUrl?: string) => void, initialPrompt?: string }> = ({ onStartMission, initialPrompt }) => {
+    const [prompt, setPrompt] = useState(initialPrompt || '');
+    const [isLoading, setIsLoading] = useState(false);
+    const [audioFile, setAudioFile] = useState<File | null>(null);
+    const audioInputRef = useRef<HTMLInputElement>(null);
+    
+    const handleGenerate = async () => {
+        if (!prompt.trim()) return;
+        setIsLoading(true);
+        let audioDataUrl: string | undefined = undefined;
+        if (audioFile) {
+            audioDataUrl = await fileToDataURL(audioFile);
+        }
+        onStartMission(prompt, audioDataUrl);
+        setTimeout(() => {
+            setIsLoading(false);
+            setPrompt('');
+            setAudioFile(null);
+            if(audioInputRef.current) audioInputRef.current.value = '';
+        }, 1000);
+    };
+
+    const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) setAudioFile(file);
+    };
+    
+    return (
+        <div className="w-full max-w-3xl mx-auto flex flex-col items-center gap-6 animate-fade-in">
+            <h2 className="text-4xl font-bold tracking-tight">Generate Video with AI</h2>
+            <p className="text-purple-200/70">Describe the video you want to create. From prompt to motion picture!</p>
+            <form onSubmit={(e) => { e.preventDefault(); handleGenerate(); }} className="w-full flex flex-col gap-3">
+                <div className="w-full flex items-center gap-3 bg-purple-950/50 border border-purple-800 rounded-lg p-2 backdrop-blur-xl">
+                    <input
+                        type="text"
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        placeholder="e.g., A cinematic shot of a cyberpunk city in the rain"
+                        className="flex-grow bg-transparent text-gray-200 p-2 text-lg focus:outline-none transition w-full disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={isLoading}
+                    />
+                    <button
+                        type="submit"
+                        className="gradient-button bg-gradient-to-br from-purple-800 to-violet-700 text-purple-100 font-bold py-3 px-6 text-base rounded-md transition-all duration-300 ease-in-out shadow-lg shadow-black/20 hover:from-purple-700 hover:to-violet-600 active:scale-95 disabled:bg-purple-800/40 disabled:shadow-none disabled:cursor-not-allowed"
+                        disabled={isLoading || !prompt.trim()}
+                    >
+                        {isLoading ? "Starting..." : "Start Mission"}
+                    </button>
+                </div>
+                
+                 <label htmlFor="audio-upload" className="w-full flex items-center justify-center gap-3 bg-purple-950/50 border border-dashed border-purple-800/60 rounded-lg p-3 backdrop-blur-xl cursor-pointer hover:border-purple-600 hover:bg-purple-900/50 transition-colors">
+                    <MusicIcon className="w-5 h-5 text-purple-400" />
+                    <span className="text-sm text-purple-300">{audioFile ? `Audio: ${audioFile.name}` : 'Optional: Add background audio'}</span>
+                    <input id="audio-upload" ref={audioInputRef} type="file" className="hidden" accept="audio/*" onChange={handleAudioFileChange} />
+                </label>
+            </form>
+             <p className="text-sm text-purple-300/50">Video generation can take several minutes. Your task will run in the background.</p>
+        </div>
+    );
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>('start');
   const [missionToEdit, setMissionToEdit] = useState<Mission | null>(null);
   const [previewMission, setPreviewMission] = useState<Mission | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  // --- Editor State ---
   const [history, setHistory] = useState<File[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [prompt, setPrompt] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [editHotspot, setEditHotspot] = useState<{ x: number, y: number } | null>(null);
+  const [displayHotspot, setDisplayHotspot] = useState<{ x: number, y: number } | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('retouch');
-  const [isComparing, setIsComparing] = useState<boolean>(false);
-  const imgRef = useRef<HTMLImageElement>(null);
   
-  // --- Crop State ---
   const [crop, setCrop] = useState<Crop>();
   const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
   const [aspect, setAspect] = useState<number | undefined>();
+  const [isComparing, setIsComparing] = useState<boolean>(false);
+  const imgRef = useRef<HTMLImageElement>(null);
   
-  // --- Retouch State ---
-  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [brushSize, setBrushSize] = useState(40);
-  const [isErasing, setIsErasing] = useState(false);
-  const lastPoint = useRef<{ x: number, y: number } | null>(null);
-  const [isMaskDrawn, setIsMaskDrawn] = useState(false);
-
-  // --- UI State ---
   const [cursorPos, setCursorPos] = useState({ x: -100, y: -100 });
   const [missions, setMissions] = useState<Mission[]>([]);
 
@@ -616,23 +656,43 @@ const App: React.FC = () => {
     try {
         if (mission.type === 'image-gen') {
             updateMission(mission.id, { progressMessage: 'Generating images...' });
-            let images: string[];
-            if (mission.imageDataUrl) {
-                const imageFile = dataURLtoFile(mission.imageDataUrl, 'gen-input.png');
-                images = await generateImageFromImageAndPrompt(imageFile, mission.prompt);
-            } else {
-                images = await generateImageFromPrompt(mission.prompt);
-            }
+            const images = await generateImageFromPrompt(mission.prompt);
             await saveResult(mission.id, images);
             updateMission(mission.id, { status: 'completed', result: true });
-        } else if (mission.type === 'audio-scape') {
-            if (!mission.imageDataUrl) throw new Error("Audio scape mission requires an image.");
-            updateMission(mission.id, { progressMessage: 'Analyzing scene...' });
-            const imageFile = dataURLtoFile(mission.imageDataUrl, 'audioscape-input.png');
-            const resultText = await generateAudioScape(imageFile, mission.prompt);
-            const textBlob = new Blob([resultText], { type: 'text/plain' });
-            await saveResult(mission.id, textBlob);
-            updateMission(mission.id, { status: 'completed', result: true, progressMessage: "Done!" });
+        } else if (mission.type === 'video-gen') {
+            let operation = mission.operation;
+            if (!operation) { 
+                updateMission(mission.id, { progressMessage: 'Initializing video...' });
+                operation = await generateVideoFromPrompt(mission.prompt);
+                updateMission(mission.id, { operation });
+            }
+
+            const loadingMessages = [
+              "Brewing cosmic coffee for the AI...",
+              "Teaching pixels to dance...",
+              "Reticulating splines...",
+              "Composing a digital symphony...",
+              "This can take a few minutes...",
+              "Finalizing the motion picture..."
+            ];
+            let msgIndex = 0;
+
+            while (!operation.done) {
+                updateMission(mission.id, { progressMessage: loadingMessages[msgIndex % loadingMessages.length] });
+                msgIndex++;
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                operation = await checkVideoOperationStatus(operation);
+            }
+            
+            const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+            if (downloadLink) {
+                const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+                const blob = await response.blob();
+                await saveResult(mission.id, blob);
+                updateMission(mission.id, { status: 'completed', result: true, progressMessage: "Done!" });
+            } else {
+                throw new Error("Video generation finished, but no URL was returned.");
+            }
         }
     } catch (err) {
         const error = err instanceof Error ? err.message : 'An unknown error occurred.';
@@ -648,29 +708,21 @@ const App: React.FC = () => {
     }
   }, [missions, processMission]);
 
-  const handleStartMission = async (type: MissionType, prompt: string, options?: { imageFile?: File }) => {
-      let imageDataUrl: string | undefined;
-      if (options?.imageFile) {
-          imageDataUrl = await fileToDataURL(options.imageFile);
-      }
-
+  const handleStartMission = (type: MissionType, prompt: string, audioDataUrl?: string) => {
       const newMission: Mission = {
           id: `mission_${Date.now()}`,
           type,
           prompt,
           status: 'pending',
           createdAt: Date.now(),
-          imageDataUrl,
+          audioDataUrl,
       };
       setMissions(prev => [...prev, newMission]);
       setView('start');
   };
 
   const handleRegenerateMission = (mission: Mission) => {
-      const options = {
-          imageFile: mission.imageDataUrl ? dataURLtoFile(mission.imageDataUrl, 'image.png') : undefined,
-      }
-      handleStartMission(mission.type, mission.prompt, options);
+      handleStartMission(mission.type, mission.prompt, mission.audioDataUrl);
   };
 
   const handleEditMission = (mission: Mission) => {
@@ -733,14 +785,17 @@ const App: React.FC = () => {
     // Reset tool-specific states for a clean slate after any modification
     setCrop(undefined);
     setCompletedCrop(undefined);
+    setEditHotspot(null);
+    setDisplayHotspot(null);
     setPrompt('');
-    handleClearMask();
   }, [history, historyIndex]);
 
   const handleImageUpload = useCallback((file: File) => {
     setApiError(null);
     setHistory([file]);
     setHistoryIndex(0);
+    setEditHotspot(null);
+    setDisplayHotspot(null);
     setActiveTab('retouch');
     setCrop(undefined);
     setCompletedCrop(undefined);
@@ -767,23 +822,10 @@ const App: React.FC = () => {
     }
   }, [currentImage, addImageToHistory]);
 
-  const handleInpaint = useCallback(async () => {
-    if (!currentImage || !prompt.trim() || !maskCanvasRef.current || !isMaskDrawn) return;
-    setIsLoading(true);
-    setApiError(null);
-    try {
-        const maskDataUrl = maskCanvasRef.current.toDataURL();
-        const resultImageUrl = await generateInpaintedImage(currentImage, maskDataUrl, prompt);
-        const newImageFile = dataURLtoFile(resultImageUrl, `ai-inpaint-${Date.now()}.png`);
-        addImageToHistory(newImageFile);
-    } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-        setApiError(`Failed to call the Gemini API: ${errorMessage}`);
-        console.error(err);
-    } finally {
-        setIsLoading(false);
-    }
-  }, [currentImage, prompt, isMaskDrawn, addImageToHistory]);
+  const handleGenerate = useCallback(async () => {
+    if (!currentImage || !prompt.trim() || !editHotspot) return;
+    await handleAIGeneration((file) => generateEditedImage(file, prompt, editHotspot));
+  }, [currentImage, prompt, editHotspot, handleAIGeneration]);
   
   const handleApplyFilter = (filterPrompt: string) => handleAIGeneration(generateFilteredImage, filterPrompt);
   const handleRemoveBackground = () => handleAIGeneration(removeBackgroundImage);
@@ -842,6 +884,8 @@ const App: React.FC = () => {
       setHistoryIndex(-1);
       setApiError(null);
       setPrompt('');
+      setEditHotspot(null);
+      setDisplayHotspot(null);
       setView('start');
   }, []);
 
@@ -855,14 +899,15 @@ const App: React.FC = () => {
       }
   }, [currentImage]);
   
-  const handleClearMask = useCallback(() => {
-    const canvas = maskCanvasRef.current;
-    if (canvas) {
-        const ctx = canvas.getContext('2d');
-        ctx?.clearRect(0, 0, canvas.width, canvas.height);
-    }
-    setIsMaskDrawn(false);
-  }, []);
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (activeTab !== 'retouch') return;
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const offsetY = e.clientY - rect.top;
+    setDisplayHotspot({ x: offsetX, y: offsetY });
+    setEditHotspot({ x: Math.round(offsetX * (img.naturalWidth / img.clientWidth)), y: Math.round(offsetY * (img.naturalHeight / img.clientHeight)) });
+  };
   
   const tabsRef = useRef<(HTMLButtonElement | null)[]>([]);
   const sliderRef = useRef<HTMLSpanElement>(null);
@@ -875,77 +920,11 @@ const App: React.FC = () => {
     }
   }, [activeTab]);
 
-  // --- Retouch Canvas Drawing Logic ---
-    const getPointerPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        const canvas = maskCanvasRef.current;
-        if (!canvas) return null;
-        const rect = canvas.getBoundingClientRect();
-        return {
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top,
-        };
-    };
-
-    const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        if (e.button !== 0) return;
-        setIsDrawing(true);
-        const pos = getPointerPos(e);
-        if (pos) {
-            lastPoint.current = pos;
-            // Draw a single dot for clicks
-            const ctx = maskCanvasRef.current?.getContext('2d');
-            if (!ctx) return;
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, brushSize / 2, 0, Math.PI * 2);
-            ctx.fillStyle = 'white';
-            ctx.fill();
-        }
-    };
-    
-    const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        if (!isDrawing) return;
-        const pos = getPointerPos(e);
-        const ctx = maskCanvasRef.current?.getContext('2d');
-        if (pos && ctx && lastPoint.current) {
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.lineWidth = brushSize;
-            ctx.globalCompositeOperation = isErasing ? 'destination-out' : 'source-over';
-            ctx.strokeStyle = 'white';
-            
-            ctx.beginPath();
-            ctx.moveTo(lastPoint.current.x, lastPoint.current.y);
-            ctx.lineTo(pos.x, pos.y);
-            ctx.stroke();
-            lastPoint.current = pos;
-        }
-    };
-    
-    const handlePointerUp = () => {
-        setIsDrawing(false);
-        lastPoint.current = null;
-        // Check if mask has content
-        const canvas = maskCanvasRef.current;
-        if (canvas) {
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-                let hasContent = false;
-                for (let i = 3; i < data.length; i += 4) {
-                    if (data[i] > 0) {
-                        hasContent = true;
-                        break;
-                    }
-                }
-                setIsMaskDrawn(hasContent);
-            }
-        }
-    };
 
   const renderContent = () => {
     if (view === 'start') return <StartScreen missions={missions} onFileSelect={(files) => files && handleImageUpload(files[0])} onNavigate={setView} />;
-    if (view === 'image-gen') return <ImageGenerationScreen onStartMission={(prompt, img) => handleStartMission('image-gen', prompt, { imageFile: img })} initialPrompt={missionToEdit?.prompt} />;
-    if (view === 'audio-scape') return <AudioScapeScreen onStartMission={(prompt, img) => handleStartMission('audio-scape', prompt, { imageFile: img })} initialPrompt={missionToEdit?.prompt} />;
+    if (view === 'image-gen') return <ImageGenerationScreen onStartMission={(prompt) => handleStartMission('image-gen', prompt)} initialPrompt={missionToEdit?.prompt} />;
+    if (view === 'video-gen') return <VideoGenerationScreen onStartMission={(prompt, audio) => handleStartMission('video-gen', prompt, audio)} initialPrompt={missionToEdit?.prompt} />;
           
     if (!currentImageUrl) {
         return <StartScreen missions={missions} onFileSelect={(files) => files && handleImageUpload(files[0])} onNavigate={setView} />;
@@ -954,13 +933,7 @@ const App: React.FC = () => {
     const imageDisplay = (
       <div className="relative">
         {originalImageUrl && <img key={originalImageUrl} src={originalImageUrl} alt="Original" className="w-full h-auto object-contain max-h-[60vh] rounded-xl pointer-events-none" />}
-        <img ref={imgRef} key={currentImageUrl} src={currentImageUrl} alt="Current" className={`absolute top-0 left-0 w-full h-auto object-contain max-h-[60vh] rounded-xl transition-opacity duration-300 ease-in-out ${isComparing ? 'opacity-0' : 'opacity-100'} ${activeTab === 'retouch' ? 'cursor-none' : ''}`} onLoad={(e) => {
-            if (maskCanvasRef.current) {
-                maskCanvasRef.current.width = e.currentTarget.clientWidth;
-                maskCanvasRef.current.height = e.currentTarget.clientHeight;
-            }
-        }}/>
-        {activeTab === 'retouch' && <canvas ref={maskCanvasRef} className="retouch-canvas cursor-none" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} />}
+        <img ref={imgRef} key={currentImageUrl} src={currentImageUrl} alt="Current" onClick={handleImageClick} className={`absolute top-0 left-0 w-full h-auto object-contain max-h-[60vh] rounded-xl transition-opacity duration-300 ease-in-out ${isComparing ? 'opacity-0' : 'opacity-100'} ${activeTab === 'retouch' ? 'cursor-none' : ''}`} />
       </div>
     );
     
@@ -983,6 +956,10 @@ const App: React.FC = () => {
                 {cropImageElement}
               </ReactCrop>
             ) : imageDisplay }
+
+            {displayHotspot && !isLoading && activeTab === 'retouch' && (
+                <div className="edit-hotspot-display" style={{ left: `${displayHotspot.x}px`, top: `${displayHotspot.y}px` }}/>
+            )}
         </div>
         
         <div className="editor-tabs-container w-full bg-purple-950/50 border border-purple-800/50 rounded-xl p-2 flex items-center justify-around gap-2 backdrop-blur-2xl animated-panel">
@@ -990,6 +967,7 @@ const App: React.FC = () => {
             {(['retouch', 'crop', 'adjust', 'filters'] as Tab[]).map((tab, i) => (
                  <button 
                     key={tab} 
+                    // FIX: The ref callback function should not return a value. The assignment was being implicitly returned, causing a type mismatch. Wrapping the assignment in curly braces fixes this by giving the arrow function a void return type.
                     ref={el => { tabsRef.current[i] = el; }}
                     onClick={() => setActiveTab(tab)} 
                     className={`relative w-full z-10 capitalize font-semibold py-3 px-5 rounded-lg transition-colors duration-300 text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950 ${activeTab === tab ? 'text-white' : 'text-purple-200/70 hover:text-white'}`}
@@ -1001,19 +979,15 @@ const App: React.FC = () => {
         
         <div className="w-full">
             {activeTab === 'retouch' && (
-                <RetouchPanel
-                    key={currentImageUrl}
-                    prompt={prompt}
-                    onPromptChange={setPrompt}
-                    onGenerate={handleInpaint}
-                    isLoading={isLoading}
-                    isMaskDrawn={isMaskDrawn}
-                    brushSize={brushSize}
-                    onBrushSizeChange={setBrushSize}
-                    onClearMask={handleClearMask}
-                    isErasing={isErasing}
-                    onToggleEraser={() => setIsErasing(!isErasing)}
-                />
+                <div className="flex flex-col items-center gap-4">
+                    <p className="text-md text-purple-200/70">{editHotspot ? 'Now, describe the change you want to make.' : 'First, click a point on the image to edit.'}</p>
+                    <form onSubmit={(e) => { e.preventDefault(); handleGenerate(); }} className="w-full flex items-center gap-3">
+                        <input type="text" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={editHotspot ? "e.g., 'remove the scar'" : "First click a point on the image"} className="flex-grow bg-purple-950/50 border border-purple-800 text-gray-200 rounded-lg p-4 text-lg focus:ring-2 focus:ring-purple-500 focus:outline-none transition w-full disabled:cursor-not-allowed disabled:opacity-60" disabled={isLoading || !editHotspot} />
+                        <button type="submit" className="gradient-button bg-gradient-to-br from-violet-600 to-purple-600 text-white font-bold py-4 px-8 text-lg rounded-lg transition-all duration-300 ease-in-out shadow-lg shadow-purple-500/20 hover:shadow-xl hover:shadow-purple-500/40 hover:-translate-y-px active:scale-95 active:shadow-inner disabled:from-gray-700 disabled:to-gray-600 disabled:shadow-none disabled:cursor-not-allowed disabled:transform-none" disabled={isLoading || !prompt.trim() || !editHotspot}>
+                            Generate
+                        </button>
+                    </form>
+                </div>
             )}
             {activeTab === 'crop' && <CropPanel key={currentImageUrl} onApplyCrop={handleApplyCrop} onSetAspect={setAspect} onApplyCropSuggestion={handleApplyCropSuggestion} currentImage={currentImage} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
             {activeTab === 'adjust' && <AdjustmentPanel key={currentImageUrl} onRemoveBackground={handleRemoveBackground} onUpscale={handleUpscaleImage} onAutoEnhance={handleAutoEnhance} onBalanceColors={handleBalanceColors} isLoading={isLoading} />}
@@ -1037,11 +1011,7 @@ const App: React.FC = () => {
     <div className={`min-h-screen text-gray-100 flex flex-col ${activeTab === 'retouch' && view === 'editor' ? 'hide-cursor' : ''}`}>
       <div className="custom-cursor">
         <div className="glow" style={{ left: `${cursorPos.x}px`, top: `${cursorPos.y}px` }} />
-        {activeTab === 'retouch' && view === 'editor' && !isLoading ? (
-            <div className="dot" style={{ left: `${cursorPos.x}px`, top: `${cursorPos.y}px`, width: `${brushSize}px`, height: `${brushSize}px`, background: 'transparent', border: `2px solid ${isErasing ? '#f43f5e' : 'white'}`, transition: 'width 0.1s, height 0.1s' }} />
-        ) : (
-            <div className="dot" style={{ left: `${cursorPos.x}px`, top: `${cursorPos.y}px` }} />
-        )}
+        <div className="dot" style={{ left: `${cursorPos.x}px`, top: `${cursorPos.y}px` }} />
       </div>
 
       <ApiErrorToast error={apiError} onClose={() => setApiError(null)} />
@@ -1056,20 +1026,14 @@ const App: React.FC = () => {
         onEditMission={handleEditMission}
         onSetPreview={setPreviewMission}
       />
-      <main className={`flex-grow w-full max-w-[1600px] mx-auto p-4 md:p-8 flex justify-center ${view === 'start' || view === 'image-gen' || view === 'audio-scape' ? 'items-center' : 'items-start'}`}>
+      <main className={`flex-grow w-full max-w-[1600px] mx-auto p-4 md:p-8 flex justify-center ${view === 'start' || view === 'image-gen' || view === 'video-gen' ? 'items-center' : 'items-start'}`}>
         {renderContent()}
       </main>
-      <footer className="w-full text-center p-6 mt-auto bg-black/20 border-t border-purple-500/10 backdrop-blur-sm">
-        <p className="text-purple-200/80 font-bold text-lg">Peter Pixx</p>
-        <p className="text-sm text-purple-300/50">Your cosmic playground for media, powered by Gemini.</p>
-        <div className="flex justify-center gap-4 mt-3 text-sm text-purple-400/60">
-            <a href="#" className="hover:text-purple-300 transition-colors">About</a>
-            <span className="text-purple-400/30">•</span>
-            <a href="#" className="hover:text-purple-300 transition-colors">Community</a>
-             <span className="text-purple-400/30">•</span>
-            <a href="#" className="hover:text-purple-300 transition-colors">Contact</a>
-        </div>
-       </footer>
+       {view === 'editor' && (
+         <footer className="text-center p-4 text-purple-300/40 text-sm">
+           PP (made with love from egypt)
+         </footer>
+       )}
     </div>
   );
 };
