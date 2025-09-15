@@ -989,9 +989,9 @@ const App: React.FC = () => {
                     </form>
                 </div>
             )}
-            {activeTab === 'crop' && <CropPanel onApplyCrop={handleApplyCrop} onSetAspect={setAspect} onApplyCropSuggestion={handleApplyCropSuggestion} currentImage={currentImage} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
-            {activeTab === 'adjust' && <AdjustmentPanel onRemoveBackground={handleRemoveBackground} onUpscale={handleUpscaleImage} onAutoEnhance={handleAutoEnhance} onBalanceColors={handleBalanceColors} isLoading={isLoading} />}
-            {activeTab === 'filters' && <FilterPanel onApplyFilter={handleApplyFilter} isLoading={isLoading} />}
+            {activeTab === 'crop' && <CropPanel key={currentImageUrl} onApplyCrop={handleApplyCrop} onSetAspect={setAspect} onApplyCropSuggestion={handleApplyCropSuggestion} currentImage={currentImage} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
+            {activeTab === 'adjust' && <AdjustmentPanel key={currentImageUrl} onRemoveBackground={handleRemoveBackground} onUpscale={handleUpscaleImage} onAutoEnhance={handleAutoEnhance} onBalanceColors={handleBalanceColors} isLoading={isLoading} />}
+            {activeTab === 'filters' && <FilterPanel key={currentImageUrl} onApplyFilter={handleApplyFilter} isLoading={isLoading} />}
         </div>
         
         <div className="flex flex-wrap items-center justify-center gap-3 mt-4 w-full">
